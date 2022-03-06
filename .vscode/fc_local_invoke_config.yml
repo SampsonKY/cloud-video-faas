@@ -1,0 +1,9 @@
+templates:
+  template.yml:
+    test:
+      httptest:
+        event: default_evt
+        events:
+          default_evt:
+            type: file
+            value: test\httptest\event.evt

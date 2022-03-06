@@ -1,0 +1,14 @@
+service:
+  name: midway-http  
+
+provider:
+  name: aliyun ## 发布的平台
+
+aggregation: ## 对 HTTP 函数使用聚合部署模式
+  api: ## 部署的函数名
+    functionPattern: ## 匹配的函数规则
+      - '*'
+
+custom:
+  customDomain:
+    domainName: auto # 由于发布 HTTP 服务，域名这里使用自动生成，后续可以单独绑定
