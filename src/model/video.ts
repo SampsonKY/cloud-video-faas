@@ -71,4 +71,16 @@ export class Video extends Model {
     comment: '标签',
   })
   tags: string;
+
+  @Column({
+    type: DataType.SMALLINT,
+    comment: '状态',
+  })
+  status: number;
+
+  @Column({
+    type: DataType.NUMBER,
+    comment: '视频被观看次数',
+  })
+  viewCount: number;
 }

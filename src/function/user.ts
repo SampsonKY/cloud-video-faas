@@ -63,6 +63,7 @@ export class HomeController {
       signature,
       avatar,
       background,
+      is_admin: 0,
     });
     if (create_res instanceof Error) {
       return res_obj('创建用户失败');
@@ -263,5 +264,39 @@ export class HomeController {
       pn,
       limit,
     });
+  }
+
+  @Post('/is_admin')
+  async isAdmin(@Body('username') username: string) {
+    const res = await User.findOne({
+      attributes: ['is_admin'],
+      where: {
+        username,
+      },
+    });
+
+    if (res instanceof Error) {
+      return res_obj('查询失败');
+    }
+    return res_obj('', {
+      is_admin: res.is_admin,
+    });
+  }
+
+  @Get('/admin_list')
+  async AdminList() {
+    const res = await User.findAll({
+      attributes: ['username'],
+      where: {
+        is_admin: 1,
+      },
+    });
+    if (res instanceof Error) {
+      return res_obj('获取管理员列表失败');
+    }
+    return res_obj(
+      '',
+      res.map(i => i.username)
+    );
   }
 }

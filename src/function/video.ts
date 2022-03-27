@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Get,
+  Inject,
   Param,
   Post,
   Provide,
@@ -15,20 +16,66 @@ import { VerifyMiddleware } from '../middleware/verify';
 import { Comment } from '../model/comment';
 import format from '../utils/format';
 import { Tag } from '../model/tag';
-
+import { Danmu } from '../model/danmu';
+import { Op } from 'sequelize';
+import { Review } from '../model/review';
+import { ViewHistory } from '../model/view_history';
+import { RecommendService } from '../service/recommend';
 @Provide()
 @Controller('/video')
 export class VideoController {
+  @Inject()
+  recommendService: RecommendService;
+
   @Get('/recommend')
-  async getRecommendVideo(@Query('pn') pn = 0) {
-    const limit = 3;
-    const result = await Video.findAll({
-      offset: limit * pn,
-      limit: 3,
-      raw: true,
+  async getRecommendVideo(@Query('pn') pn = 0, @Query('username') username) {
+    // 查询用户历史记录，若无历史记录，则冷启动，否则使用推荐算法
+    const historyCount = await ViewHistory.count({
+      where: {
+        username,
+      },
     });
-    if (result instanceof Error) {
-      return res_obj('视频获取失败');
+
+    console.log('historyCount', historyCount);
+
+    let result = [];
+
+    if (historyCount > 3) {
+      // 初始矩阵
+      const initData = await this.recommendService.initMatrix(username);
+      // 推荐算法
+      const percent = await this.recommendService.recommendAlgorism(initData);
+      // 获取内容
+      result = await this.recommendService.recommendContent(percent);
+
+      // 若推荐内容数量不足，则热门来凑
+      const resIds = result.map(item => item.id);
+      const extra = await Video.findAll({
+        where: {
+          status: 1,
+          id: {
+            [Op.notIn]: [...resIds],
+          },
+        },
+        order: [['viewCount', 'DESC']],
+        limit: 10 - resIds.length,
+        raw: true,
+      });
+      result = result.concat(extra);
+    } else {
+      const limit = 10;
+      result = await Video.findAll({
+        where: {
+          status: 1,
+        },
+        order: [['viewCount', 'DESC']],
+        offset: limit * pn,
+        limit: 10,
+        raw: true,
+      });
+      if (result instanceof Error) {
+        return res_obj('视频获取失败');
+      }
     }
 
     const ret = [];
@@ -59,6 +106,7 @@ export class VideoController {
       ret[i] = {
         avatar,
         tagNames,
+        tagIds,
         ...result[i],
       };
     }
@@ -66,6 +114,20 @@ export class VideoController {
     return res_obj('', {
       videos: ret,
     });
+  }
+
+  @Get('/rank')
+  async getVideoRank() {
+    const res = await Video.findAll({
+      order: [['viewCount', 'DESC']],
+      limit: 10,
+    });
+
+    if (res instanceof Error) {
+      return res_obj('获取排行榜错误');
+    }
+
+    return res_obj('', res);
   }
 
   // 点赞视频
@@ -246,6 +308,7 @@ export class VideoController {
     const { likes, stars, comments } = await Video.findOne({
       attributes: ['likes', 'stars', 'comments'],
       where: {
+        status: 1,
         id: videoId,
       },
     });
@@ -265,6 +328,7 @@ export class VideoController {
   async getVideoById(@Param('videoId') videoId) {
     const ret = await Video.findOne({
       where: {
+        status: 1,
         id: videoId,
       },
     });
@@ -298,6 +362,7 @@ export class VideoController {
     return res_obj('', {
       avatar,
       tagNames,
+      tagIds,
       ...ret.toJSON(),
     });
   }
@@ -306,7 +371,6 @@ export class VideoController {
   @Post('/create')
   async createVideo(@Body(ALL) body) {
     const { author, url, title, description, cover, tags } = body;
-    console.log(body);
     const res = await Video.create({
       author,
       url,
@@ -314,6 +378,7 @@ export class VideoController {
       description,
       cover,
       tags: tags.toString(),
+      status: 0,
     });
     if (res instanceof Error) {
       return res_obj('视频新建失败');
@@ -325,6 +390,201 @@ export class VideoController {
     );
     if (ret instanceof Error) {
       return res_obj('视频新建异常');
+    }
+
+    // 生成审核记录
+    const ress = await Review.create({
+      videoId: res.id,
+      result: 0,
+    });
+    if (ress instanceof Error) {
+      return res_obj('生成审核记录失败');
+    }
+
+    return res_obj('');
+  }
+
+  // 获取视频弹幕
+  @Get('/:videoId/danmu')
+  async getDanmu(@Param('videoId') videoId) {
+    const ret = await Danmu.findAll({
+      where: {
+        videoId,
+      },
+    });
+    if (ret instanceof Error) {
+      return res_obj('获取视频弹幕失败');
+    }
+    return res_obj('', ret);
+  }
+
+  // 生成视频弹幕
+  @Post('/:videoId/send_danmu')
+  async sendDanmu(@Param('videoId') videoId, @Body(ALL) body) {
+    const { txt, start, username, duration = 5000 } = body;
+    const ret = await Danmu.create({
+      txt,
+      start,
+      username,
+      videoId,
+      duration,
+    });
+
+    if (ret instanceof Error) {
+      return res_obj('发送弹幕失败');
+    }
+    return res_obj('');
+  }
+
+  // 根据 tag 获取视频列表
+  @Get('/sort')
+  async getVideoByTag(@Query('tag') tag: number) {
+    const result = await Video.findAll({
+      where: {
+        status: 1,
+        tags: {
+          [Op.like]: `%${tag.toString()}%`,
+        },
+      },
+      order: [['viewCount', 'DESC']],
+      raw: true,
+    });
+    if (result instanceof Error) {
+      return res_obj('获取视频列表失败');
+    }
+
+    const ret = [];
+
+    for (let i = 0; i < result.length; i++) {
+      const { avatar } = await User.findOne({
+        attributes: ['avatar'],
+        where: {
+          username: result[i].author,
+        },
+      });
+
+      const tagIds = format(result[i].tags);
+
+      const tagNames = await Promise.all(
+        tagIds.map(async id => {
+          const { tag } = await Tag.findOne({
+            attributes: ['tag'],
+            where: {
+              id,
+            },
+            raw: true,
+          });
+          return tag;
+        })
+      );
+
+      ret[i] = {
+        avatar,
+        tagNames,
+        tagIds,
+        ...result[i],
+      };
+    }
+
+    return res_obj('', ret);
+  }
+
+  // 获取关注作者视频
+  @Get('/star')
+  async getVideoByStarAuthor(@Query('username') username: string) {
+    const ret = await User.findOne({
+      attributes: ['stars'],
+      where: {
+        username,
+      },
+      raw: true,
+    });
+    if (ret instanceof Error) {
+      return res_obj('获取关注作者信息失败');
+    }
+    const users = ret.stars.split(',').filter(i => i);
+
+    if (users.length) {
+      const res = await Promise.all(
+        users.map(
+          async user =>
+            await Video.findAll({
+              where: {
+                author: user,
+                status: 1,
+              },
+              raw: true,
+            })
+        )
+      );
+      // 按时间排序
+      const result: any[] = res
+        .flat(+Infinity)
+        .sort(
+          (a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)
+        );
+
+      const ress = [];
+
+      for (let i = 0; i < result.length; i++) {
+        const { avatar } = await User.findOne({
+          attributes: ['avatar'],
+          where: {
+            username: result[i].author,
+          },
+        });
+
+        const tagIds = format(result[i].tags);
+
+        const tagNames = await Promise.all(
+          tagIds.map(async id => {
+            const { tag } = await Tag.findOne({
+              attributes: ['tag'],
+              where: {
+                id,
+              },
+              raw: true,
+            });
+            return tag;
+          })
+        );
+
+        ress[i] = {
+          avatar,
+          tagNames,
+          tagIds,
+          ...result[i],
+        };
+      }
+      return res_obj('', ress);
+    }
+
+    return res_obj('', []);
+  }
+
+  // 视频重新发起审核
+  @Post('/review')
+  async doVideoReview(@Body('videoId') videoId: number) {
+    // 更新视频状态
+    const res = await Video.update(
+      { status: 0 },
+      {
+        where: {
+          id: videoId,
+        },
+      }
+    );
+    if (res instanceof Error) {
+      return res_obj('发起审核异常');
+    }
+
+    // 新建审核记录
+    const ret = await Review.create({
+      videoId,
+      result: 0,
+    });
+    if (ret instanceof Error) {
+      return res_obj('发起审核异常');
     }
 
     return res_obj('');

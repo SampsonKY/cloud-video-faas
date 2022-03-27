@@ -107,4 +107,10 @@ export class User extends Model {
     comment: '点赞过的回复',
   })
   like_reply: string;
+
+  @Column({
+    type: DataType.SMALLINT,
+    comment: '是否是管理员',
+  })
+  is_admin: number;
 }
